@@ -17,7 +17,7 @@ Use the Rust machine's reachable lab IP address in place of `192.168.1.10`. Tran
 
 - [x] Build a small .NET client for a test machine.
 - [x] Start the client by hand and show when it is connected.
-- [ ] Connect the Rust app and the client over TCP in a private lab network.
+- [x] Connect the Rust app and the client over TCP in a private lab network.
 - [ ] Show the client name, operating system, and connection status.
 - [ ] Run a short list of approved diagnostic commands on the client.
 - [ ] Show each command's output, error, and exit status.
