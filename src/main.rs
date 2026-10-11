@@ -1,6 +1,8 @@
 use std::env;
 use std::fs;
+use std::io::Read;
 use std::net::SocketAddr;
+use std::net::TcpListener;
 use std::path::PathBuf;
 
 const CLIENT_SOURCE: &str = include_str!("../stub/client.cs");
@@ -15,10 +17,14 @@ fn main() {
 
 fn run() -> Result<(), String> {
     let mut args = env::args().skip(1);
-    if args.next().as_deref() != Some("build") {
-        return Err(usage());
+    match args.next().as_deref() {
+        Some("build") => build(args),
+        Some("serve") => serve(args),
+        _ => Err(usage()),
     }
+}
 
+fn build(mut args: impl Iterator<Item = String>) -> Result<(), String> {
     let mut server = None;
     let mut output = None;
     while let Some(option) = args.next() {
@@ -65,6 +71,48 @@ fn run() -> Result<(), String> {
     Ok(())
 }
 
+fn serve(mut args: impl Iterator<Item = String>) -> Result<(), String> {
+    if args.next().as_deref() != Some("--bind") {
+        return Err(usage());
+    }
+
+    let address: SocketAddr = args
+        .next()
+        .ok_or_else(usage)?
+        .parse()
+        .map_err(|_| "--bind must be an IP address and port".to_string())?;
+
+    if args.next().is_some() {
+        return Err(usage());
+    }
+
+    let listener =
+        TcpListener::bind(address).map_err(|error| error.to_string())?;
+    println!(
+        "Listening on {}",
+        listener
+            .local_addr()
+            .map_err(|error| error.to_string())?
+    );
+
+    for incoming in listener.incoming() {
+        let mut connection = incoming.map_err(|error| error.to_string())?;
+        let peer = connection
+            .peer_addr()
+            .map_err(|error| error.to_string())?;
+        println!("Connected: {peer}");
+
+        let mut buffer = [0_u8; 1];
+        while connection
+            .read(&mut buffer)
+            .map_err(|error| error.to_string())?
+            != 0
+        {}
+        println!("Disconnected: {peer}");
+    }
+    Ok(())
+}
+
 fn usage() -> String {
-    "Usage: chrysails build --server IP:PORT --out DIRECTORY".to_string()
+    "Usage:\n  chrysails build --server IP:PORT --out DIRECTORY\n  chrysails serve --bind IP:PORT".to_string()
 }
