@@ -1,9 +1,9 @@
 use std::env;
 use std::fs;
 use std::io::Read;
-use std::net::SocketAddr;
-use std::net::TcpListener;
+use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::PathBuf;
+use std::time::Duration;
 
 const CLIENT_SOURCE: &str = include_str!("../stub/client.cs");
 const RUN_SCRIPT: &str = include_str!("../stub/run-client.cmd");
@@ -96,21 +96,68 @@ fn serve(mut args: impl Iterator<Item = String>) -> Result<(), String> {
     );
 
     for incoming in listener.incoming() {
-        let mut connection = incoming.map_err(|error| error.to_string())?;
-        let peer = connection
-            .peer_addr()
-            .map_err(|error| error.to_string())?;
-        println!("Connected: {peer}");
-
-        let mut buffer = [0_u8; 1];
-        while connection
-            .read(&mut buffer)
-            .map_err(|error| error.to_string())?
-            != 0
-        {}
-        println!("Disconnected: {peer}");
+        let connection = incoming.map_err(|error| error.to_string())?;
+        if let Err(error) = show_client(connection) {
+            eprintln!("Client connection error: {error}");
+        }
     }
+
     Ok(())
+}
+
+fn show_client(mut connection: TcpStream) -> Result<(), String> {
+    let peer = connection
+        .peer_addr()
+        .map_err(|error| error.to_string())?;
+    connection
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .map_err(|error| error.to_string())?;
+
+    let mut identity = Vec::new();
+    loop {
+        let mut byte = [0_u8; 1];
+        connection
+            .read_exact(&mut byte)
+            .map_err(|error| error.to_string())?;
+        if byte[0] == b'\n' {
+            break;
+        }
+        if identity.len() >= 512 {
+            return Err("client identity is too long".to_string());
+        }
+        identity.push(byte[0]);
+    }
+
+    let identity =
+        String::from_utf8(identity).map_err(|error| error.to_string())?;
+    let (name, os) = identity
+        .split_once('\t')
+        .ok_or_else(|| "client identity has no OS field".to_string())?;
+    if name.is_empty()
+        || os.is_empty()
+        || name
+            .chars()
+            .chain(os.chars())
+            .any(char::is_control)
+    {
+        return Err("client identity is invalid".to_string());
+    }
+
+    connection
+        .set_read_timeout(None)
+        .map_err(|error| error.to_string())?;
+    println!("Client: {name} | OS: {os} | Status: connected | Peer: {peer}");
+
+    let mut buffer = [0_u8; 1];
+    let result = loop {
+        match connection.read(&mut buffer) {
+            Ok(0) => break Ok(()),
+            Ok(_) => {}
+            Err(error) => break Err(error.to_string()),
+        }
+    };
+    println!("Client: {name} | OS: {os} | Status: disconnected | Peer: {peer}");
+    result
 }
 
 fn usage() -> String {

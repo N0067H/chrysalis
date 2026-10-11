@@ -1,5 +1,7 @@
 using System;
+using System.IO;
 using System.Net.Sockets;
+using System.Text;
 using System.Threading;
 
 internal static class Client
@@ -35,8 +37,13 @@ internal static class Client
                 }
 
                 connection.EndConnect(attempt);
+
+                string identity = Clean(Environment.MachineName) + "\t" + Clean(Environment.OSVersion.ToString()) + "\n";
+                byte[] message = Encoding.UTF8.GetBytes(identity);
+                connection.GetStream().Write(message, 0, message.Length);
                 connected = true;
                 Console.WriteLine("Status: connected (press Ctrl+C to stop)");
+                
                 while (!Shutdown.WaitOne(0))
                 {
                     if (connection.Client.Poll(500000, SelectMode.SelectRead) && connection.Client.Available == 0)
@@ -50,10 +57,19 @@ internal static class Client
             {
                 Console.Error.WriteLine("Connection failed: " + error.Message);
             }
+            catch (IOException error)
+            {
+                Console.Error.WriteLine("Connection failed: " + error.Message);
+            }
             finally
             {
                 Console.WriteLine(connected ? "Status: disconnected" : "Status: stopped");
             }
         }
+    }
+
+    private static string Clean(string value)
+    {
+        return value.Replace('\t', ' ').Replace('\r', ' ').Replace('\n', ' ');
     }
 }
