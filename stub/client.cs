@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Diagnostics;
 using System.Net.Sockets;
 using System.Text;
 using System.Threading;
@@ -44,12 +45,27 @@ internal static class Client
                 connected = true;
                 Console.WriteLine("Status: connected (press Ctrl+C to stop)");
                 
+                StringBuilder request = new StringBuilder();
                 while (!Shutdown.WaitOne(0))
                 {
-                    if (connection.Client.Poll(500000, SelectMode.SelectRead) && connection.Client.Available == 0)
+                    if (!connection.Client.Poll(500000, SelectMode.SelectRead))
+                        continue;
+                    int next = connection.GetStream().ReadByte();
+                    if (next < 0)
                     {
                         Console.WriteLine("Server closed the connection.");
                         break;
+                    }
+                    if (next == '\n')
+                    {
+                        RunDiagnostic(request.ToString());
+                        request.Length = 0;
+                    }
+                    else
+                    {
+                        if (request.Length >= 128)
+                            throw new IOException("Diagnostic request is too long.");
+                        request.Append((char)next);
                     }
                 }
             }
@@ -65,6 +81,37 @@ internal static class Client
             {
                 Console.WriteLine(connected ? "Status: disconnected" : "Status: stopped");
             }
+        }
+    }
+
+    private static void RunDiagnostic(string request)
+    {
+        string executable;
+        switch (request)
+        {
+            case "RUN\thostname": executable = "hostname.exe"; break;
+            case "RUN\twhoami": executable = "whoami.exe"; break;
+            case "RUN\tipconfig": executable = "ipconfig.exe"; break;
+            default:
+                Console.Error.WriteLine("Rejected unsupported diagnostic request.");
+                return;
+        }
+
+        Console.WriteLine("Running diagnostic: " + executable);
+        try
+        {
+            ProcessStartInfo start = new ProcessStartInfo();
+            start.FileName = Path.Combine(Environment.SystemDirectory, executable);
+            start.UseShellExecute = false;
+            using (Process process = Process.Start(start))
+            {
+                process.WaitForExit();
+            }
+            Console.WriteLine("Diagnostic finished: " + executable);
+        }
+        catch (System.ComponentModel.Win32Exception error)
+        {
+            Console.Error.WriteLine("Diagnostic failed: " + error.Message);
         }
     }
 

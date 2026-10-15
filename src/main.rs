@@ -1,6 +1,6 @@
 use std::env;
 use std::fs;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::time::Duration;
@@ -82,8 +82,20 @@ fn serve(mut args: impl Iterator<Item = String>) -> Result<(), String> {
         .parse()
         .map_err(|_| "--bind must be an IP address and port".to_string())?;
 
-    if args.next().is_some() {
-        return Err(usage());
+    let mut commands = Vec::new();
+    while let Some(option) = args.next() {
+        if option != "--command" {
+            return Err(usage());
+        }
+        let command = args
+            .next()
+            .ok_or_else(usage)?;
+        if !approved_command(&command) {
+            return Err(
+                "Approved diagnostics: hostname, whoami, ipconfig".into()
+            );
+        }
+        commands.push(command);
     }
 
     let listener =
@@ -97,7 +109,7 @@ fn serve(mut args: impl Iterator<Item = String>) -> Result<(), String> {
 
     for incoming in listener.incoming() {
         let connection = incoming.map_err(|error| error.to_string())?;
-        if let Err(error) = show_client(connection) {
+        if let Err(error) = show_client(connection, &commands) {
             eprintln!("Client connection error: {error}");
         }
     }
@@ -105,7 +117,10 @@ fn serve(mut args: impl Iterator<Item = String>) -> Result<(), String> {
     Ok(())
 }
 
-fn show_client(mut connection: TcpStream) -> Result<(), String> {
+fn show_client(
+    mut connection: TcpStream,
+    commands: &[String],
+) -> Result<(), String> {
     let peer = connection
         .peer_addr()
         .map_err(|error| error.to_string())?;
@@ -148,6 +163,13 @@ fn show_client(mut connection: TcpStream) -> Result<(), String> {
         .map_err(|error| error.to_string())?;
     println!("Client: {name} | OS: {os} | Status: connected | Peer: {peer}");
 
+    for command in commands {
+        connection
+            .write_all(format!("RUN\t{command}\n").as_bytes())
+            .map_err(|error| error.to_string())?;
+        println!("Requested diagnostic: {command}");
+    }
+
     let mut buffer = [0_u8; 1];
     let result = loop {
         match connection.read(&mut buffer) {
@@ -160,6 +182,32 @@ fn show_client(mut connection: TcpStream) -> Result<(), String> {
     result
 }
 
+fn approved_command(command: &str) -> bool {
+    matches!(command, "hostname" | "whoami" | "ipconfig")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::approved_command;
+
+    #[test]
+    fn only_fixed_diagnostics_are_approved() {
+        for command in ["hostname", "whoami", "ipconfig"] {
+            assert!(approved_command(command));
+        }
+        for command in [
+            "cmd",
+            "powershell",
+            "hostname & whoami",
+            "ipconfig /all",
+            "",
+            "HOSTNAME",
+        ] {
+            assert!(!approved_command(command));
+        }
+    }
+}
+
 fn usage() -> String {
-    "Usage:\n  chrysails build --server IP:PORT --out DIRECTORY\n  chrysails serve --bind IP:PORT".to_string()
+    "Usage:\n  chrysails build --server IP:PORT --out DIRECTORY\n  chrysails serve --bind IP:PORT [--command hostname|whoami|ipconfig]...".to_string()
 }
