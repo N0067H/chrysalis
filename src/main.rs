@@ -1,12 +1,16 @@
 use std::env;
 use std::fs;
-use std::io::{Read, Write};
+use std::io::{BufRead, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
+use std::thread;
 use std::time::Duration;
 
 const CLIENT_SOURCE: &str = include_str!("../stub/client.cs");
 const RUN_SCRIPT: &str = include_str!("../stub/run-client.cmd");
+
+type ActiveCommand = Arc<Mutex<Option<(TcpStream, usize)>>>;
 
 fn main() {
     if let Err(error) = run() {
@@ -107,9 +111,33 @@ fn serve(mut args: impl Iterator<Item = String>) -> Result<(), String> {
             .map_err(|error| error.to_string())?
     );
 
+    let active: ActiveCommand = Arc::new(Mutex::new(None));
+    let input_active = Arc::clone(&active);
+    thread::spawn(move || {
+        for line in std::io::stdin()
+            .lock()
+            .lines()
+        {
+            match line {
+                Ok(line) if line.trim() == "cancel" => {
+                    if let Err(error) = cancel_active(&input_active) {
+                        eprintln!("Cancellation failed: {error}");
+                    }
+                }
+                Ok(_) => {
+                    eprintln!("Type cancel to stop the current diagnostic.")
+                }
+                Err(_) => break,
+            }
+        }
+    });
+    println!(
+        "Diagnostics have a 30-second limit. Type cancel to stop the current command."
+    );
+
     for incoming in listener.incoming() {
         let connection = incoming.map_err(|error| error.to_string())?;
-        if let Err(error) = show_client(connection, &commands) {
+        if let Err(error) = show_client(connection, &commands, &active) {
             eprintln!("Client connection error: {error}");
         }
     }
@@ -120,6 +148,7 @@ fn serve(mut args: impl Iterator<Item = String>) -> Result<(), String> {
 fn show_client(
     mut connection: TcpStream,
     commands: &[String],
+    active: &ActiveCommand,
 ) -> Result<(), String> {
     let peer = connection
         .peer_addr()
@@ -163,12 +192,24 @@ fn show_client(
         .map_err(|error| error.to_string())?;
     println!("Client: {name} | OS: {os} | Status: connected | Peer: {peer}");
 
-    for command in commands {
-        connection
-            .write_all(format!("RUN\t{command}\n").as_bytes())
-            .map_err(|error| error.to_string())?;
+    for (id, command) in commands.iter().enumerate() {
+        {
+            let mut current = active.lock().unwrap();
+            connection
+                .write_all(format!("RUN\t{id}\t{command}\n").as_bytes())
+                .map_err(|error| error.to_string())?;
+            let writer = connection
+                .try_clone()
+                .map_err(|error| error.to_string())?;
+            writer
+                .set_write_timeout(Some(Duration::from_secs(2)))
+                .map_err(|error| error.to_string())?;
+            *current = Some((writer, id));
+        }
         println!("Requested diagnostic: {command}");
-        let result = read_result(&mut connection)?;
+        let result = read_result(&mut connection);
+        *active.lock().unwrap() = None;
+        let result = result?;
         println!(
             "Diagnostic: {command}\nstdout:\n{}\nstderr:\n{}\nExit status: {}",
             result.1, result.2, result.0
@@ -185,6 +226,19 @@ fn show_client(
     };
     println!("Client: {name} | OS: {os} | Status: disconnected | Peer: {peer}");
     result
+}
+
+fn cancel_active(active: &ActiveCommand) -> Result<(), String> {
+    let mut current = active.lock().unwrap();
+    if let Some((writer, id)) = current.as_mut() {
+        writer
+            .write_all(format!("CANCEL\t{id}\n").as_bytes())
+            .map_err(|error| error.to_string())?;
+        println!("Cancellation requested for diagnostic {id}");
+    } else {
+        println!("No diagnostic is running.");
+    }
+    Ok(())
 }
 
 fn approved_command(command: &str) -> bool {
@@ -222,7 +276,48 @@ fn read_result(
 
 #[cfg(test)]
 mod tests {
-    use super::{approved_command, read_result};
+    use super::*;
+
+    #[test]
+    fn cancellation_targets_active_command_and_next_result_still_works() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut client =
+            TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        let server = listener.accept().unwrap().0;
+        server
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        let active: ActiveCommand = Arc::new(Mutex::new(Some((server, 7))));
+        cancel_active(&active).unwrap();
+        let mut frame = [0; 9];
+        client
+            .read_exact(&mut frame)
+            .unwrap();
+        assert_eq!(&frame, b"CANCEL\t7\n");
+
+        // A cancelled command still returns the ordinary result format.
+        let mut result = 130_i32.to_be_bytes().to_vec();
+        result.extend_from_slice(&0_u32.to_be_bytes());
+        result.extend_from_slice(&0_u32.to_be_bytes());
+        client
+            .write_all(&result)
+            .unwrap();
+        let mut current = active.lock().unwrap();
+        let (server, id) = current.as_mut().unwrap();
+        assert_eq!(read_result(server).unwrap().0, 130);
+        *id = 8;
+        drop(current);
+        cancel_active(&active).unwrap();
+        client
+            .read_exact(&mut frame)
+            .unwrap();
+        assert_eq!(&frame, b"CANCEL\t8\n");
+        *active.lock().unwrap() = None;
+        cancel_active(&active).unwrap();
+    }
 
     #[test]
     fn result_preserves_unicode_multiline_and_failure_status() {

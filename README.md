@@ -21,7 +21,7 @@ Use the Rust machine's reachable lab IP address in place of `192.168.1.10`. Tran
 - [x] Show the client name, operating system, and connection status.
 - [x] Run a short list of approved diagnostic commands on the client.
 - [x] Show each command's output, error, and exit status.
-- [ ] Set a time limit for commands and let the user stop a running command.
+- [x] Set a time limit for commands and let the user stop a running command.
 - [ ] Keep a local record of connection and command events.
 - [ ] Close the session cleanly from either side.
 
@@ -43,3 +43,17 @@ The listener requests one command at a time and displays its stdout, stderr, and
 exit status before requesting the next. A launch failure reports stderr and exit
 status `-1`. Result fields use UTF-8 with a 1 MiB limit per field; larger results
 close the connection with an error.
+
+## Timeout and cancellation
+
+Each diagnostic has a fixed 30-second execution limit enforced by the client.
+Type `cancel` and press Enter in the listener terminal to stop the current
+diagnostic. Ctrl+C in the client also stops its running diagnostic before
+disconnecting. Timeout reports exit status `124`; cancellation reports `130`,
+with a reason in stderr and any output already captured. After a timeout or
+server cancellation, the listener proceeds to the next configured diagnostic.
+If no diagnostic is running, `cancel` has no effect.
+
+Requests carry a command ID so a late cancellation cannot stop a later command.
+Regenerate the client script: this request format is incompatible with older
+clients. A lost connection also stops the client's running diagnostic.
