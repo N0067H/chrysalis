@@ -58,7 +58,7 @@ internal static class Client
                     }
                     if (next == '\n')
                     {
-                        RunDiagnostic(request.ToString());
+                        RunDiagnostic(request.ToString(), connection.GetStream());
                         request.Length = 0;
                     }
                     else
@@ -84,7 +84,7 @@ internal static class Client
         }
     }
 
-    private static void RunDiagnostic(string request)
+    private static void RunDiagnostic(string request, Stream connection)
     {
         string executable;
         switch (request)
@@ -98,21 +98,56 @@ internal static class Client
         }
 
         Console.WriteLine("Running diagnostic: " + executable);
+        string output = "";
+        string errors = "";
+        int exitCode = -1;
         try
         {
             ProcessStartInfo start = new ProcessStartInfo();
             start.FileName = Path.Combine(Environment.SystemDirectory, executable);
             start.UseShellExecute = false;
+            start.RedirectStandardOutput = true;
+            start.RedirectStandardError = true;
             using (Process process = Process.Start(start))
             {
+                // Drain both pipes concurrently so a full stderr pipe cannot deadlock stdout.
+                Thread errorReader = new Thread(delegate() { errors = process.StandardError.ReadToEnd(); });
+                errorReader.Start();
+                output = process.StandardOutput.ReadToEnd();
                 process.WaitForExit();
+                errorReader.Join();
+                exitCode = process.ExitCode;
             }
             Console.WriteLine("Diagnostic finished: " + executable);
         }
         catch (System.ComponentModel.Win32Exception error)
         {
-            Console.Error.WriteLine("Diagnostic failed: " + error.Message);
+            errors = "Diagnostic failed: " + error.Message;
         }
+        Console.Write(output);
+        Console.Error.Write(errors);
+        Console.WriteLine("Exit status: " + exitCode);
+        WriteNumber(connection, exitCode);
+        WriteField(connection, output);
+        WriteField(connection, errors);
+        connection.Flush();
+    }
+
+    private static void WriteNumber(Stream connection, int value)
+    {
+        byte[] bytes = BitConverter.GetBytes(value);
+        if (BitConverter.IsLittleEndian)
+            Array.Reverse(bytes);
+        connection.Write(bytes, 0, bytes.Length);
+    }
+
+    private static void WriteField(Stream connection, string value)
+    {
+        byte[] bytes = Encoding.UTF8.GetBytes(value);
+        if (bytes.Length > 1024 * 1024)
+            throw new IOException("Diagnostic output exceeds 1 MiB.");
+        WriteNumber(connection, bytes.Length);
+        connection.Write(bytes, 0, bytes.Length);
     }
 
     private static string Clean(string value)

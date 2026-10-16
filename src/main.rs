@@ -168,6 +168,11 @@ fn show_client(
             .write_all(format!("RUN\t{command}\n").as_bytes())
             .map_err(|error| error.to_string())?;
         println!("Requested diagnostic: {command}");
+        let result = read_result(&mut connection)?;
+        println!(
+            "Diagnostic: {command}\nstdout:\n{}\nstderr:\n{}\nExit status: {}",
+            result.1, result.2, result.0
+        );
     }
 
     let mut buffer = [0_u8; 1];
@@ -186,9 +191,66 @@ fn approved_command(command: &str) -> bool {
     matches!(command, "hostname" | "whoami" | "ipconfig")
 }
 
+// Big-endian signed exit code, followed by two length-prefixed UTF-8 fields.
+fn read_result(
+    reader: &mut impl Read,
+) -> Result<(i32, String, String), String> {
+    fn number(reader: &mut impl Read) -> Result<[u8; 4], String> {
+        let mut bytes = [0; 4];
+        reader
+            .read_exact(&mut bytes)
+            .map_err(|e| e.to_string())?;
+        Ok(bytes)
+    }
+    fn field(reader: &mut impl Read) -> Result<String, String> {
+        let length = u32::from_be_bytes(number(reader)?) as usize;
+        if length > 1024 * 1024 {
+            return Err("diagnostic output exceeds 1 MiB".into());
+        }
+        let mut bytes = vec![0; length];
+        reader
+            .read_exact(&mut bytes)
+            .map_err(|e| e.to_string())?;
+        String::from_utf8(bytes).map_err(|e| e.to_string())
+    }
+    Ok((
+        i32::from_be_bytes(number(reader)?),
+        field(reader)?,
+        field(reader)?,
+    ))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::approved_command;
+    use super::{approved_command, read_result};
+
+    #[test]
+    fn result_preserves_unicode_multiline_and_failure_status() {
+        let mut bytes = (-1_i32)
+            .to_be_bytes()
+            .to_vec();
+        for value in ["한글\nsecond line\n", "failure\tmessage"] {
+            bytes.extend_from_slice(&(value.len() as u32).to_be_bytes());
+            bytes.extend_from_slice(value.as_bytes());
+        }
+        assert_eq!(
+            read_result(&mut bytes.as_slice()).unwrap(),
+            (-1, "한글\nsecond line\n".into(), "failure\tmessage".into())
+        );
+        bytes.pop();
+        assert!(read_result(&mut bytes.as_slice()).is_err());
+    }
+
+    #[test]
+    fn oversized_output_is_rejected_before_allocation() {
+        let mut bytes = 0_i32.to_be_bytes().to_vec();
+        bytes.extend_from_slice(&(1024_u32 * 1024 + 1).to_be_bytes());
+        assert!(
+            read_result(&mut bytes.as_slice())
+                .unwrap_err()
+                .contains("1 MiB")
+        );
+    }
 
     #[test]
     fn only_fixed_diagnostics_are_approved() {

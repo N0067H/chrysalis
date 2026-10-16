@@ -1,6 +1,6 @@
 # chrysails
 
-`chrysails` is a small lab project for studying Compile-After-Delivery. Its Rust CLI generates a Windows command script containing a small C# client. The script compiles the client with the test machine's `csc.exe` when run. The client can connect to a manually started TCP listener; remote diagnostics are still planned.
+`chrysails` is a small lab project for studying Compile-After-Delivery. Its Rust CLI generates a Windows command script containing a small C# client. The script compiles the client with the test machine's `csc.exe` when run. The client connects to a manually started TCP listener and runs approved diagnostics.
 
 ## Connection check
 
@@ -20,7 +20,7 @@ Use the Rust machine's reachable lab IP address in place of `192.168.1.10`. Tran
 - [x] Connect the Rust app and the client over TCP in a private lab network.
 - [x] Show the client name, operating system, and connection status.
 - [x] Run a short list of approved diagnostic commands on the client.
-- [ ] Show each command's output, error, and exit status.
+- [x] Show each command's output, error, and exit status.
 - [ ] Set a time limit for commands and let the user stop a running command.
 - [ ] Keep a local record of connection and command events.
 - [ ] Close the session cleanly from either side.
@@ -37,5 +37,9 @@ Each connecting client runs these diagnostics in order and displays output in it
 own console. Both sides accept only the exact names `hostname`, `whoami`, and
 `ipconfig`, without arguments. The client launches executables from the Windows
 system directory without a shell. Without `--command`, only the connection is
-checked. Regenerate the client script after updating. Output, errors, and exit
-status are not yet sent to the listener.
+checked. Regenerate the client script after updating; older clients do not send
+results and are incompatible with diagnostic requests from this listener.
+The listener requests one command at a time and displays its stdout, stderr, and
+exit status before requesting the next. A launch failure reports stderr and exit
+status `-1`. Result fields use UTF-8 with a 1 MiB limit per field; larger results
+close the connection with an error.
